@@ -41,6 +41,8 @@ class Agent:
                 return self._fallback_campaigns(env)
 
             profile = self._normalize_columns(profile)
+            self._active_rows = rows = self._profile_rows(profile)
+            self._profile_index = self._build_profile_index(rows)
             tariffs = self._extract_tariffs(env, profile)
             channels = self._extract_channels(env)
             campaign_candidates = self._build_campaign_candidates(profile, tariffs, channels)
@@ -71,6 +73,7 @@ class Agent:
                     campaign.get("filter_arpu_segment"),
                     campaign.get("filter_data_segment"),
                     campaign.get("filter_current_tariff"),
+                    campaign.get("filter_call_segment"),
                     campaign.get("target_tariff"),
                     campaign.get("channel"),
                 )
@@ -189,69 +192,77 @@ class Agent:
 
         arpu_levels = self._segment_values(profile, "arpu_segment")
         data_levels = self._segment_values(profile, "data_segment")
+        call_levels = self._segment_values(profile, "call_segment")
 
         sorted_tariffs = self._sort_tariffs(tariffs)
         target_pool = self._choose_target_tariffs(sorted_tariffs)
 
         for arpu_segment in arpu_levels:
             for data_segment in data_levels[:3]:
-                for current_tariff in current_values[: min(5, len(current_values))]:
-                    for target_tariff in target_pool[:4]:
-                        if target_tariff == current_tariff:
-                            continue
-                        for channel in channels[:3]:
-                            campaign = {
-                                "campaign_name": f"{arpu_segment}_{current_tariff}_to_{target_tariff}_{channel}",
-                                "filter_arpu_segment": arpu_segment,
-                                "filter_data_segment": data_segment,
-                                "filter_current_tariff": current_tariff,
-                                "target_tariff": target_tariff,
-                                "channel": channel,
-                            }
-                            candidates.append(campaign)
+                for call_segment in call_levels[:3] or [None]:
+                    for current_tariff in current_values[: min(3, len(current_values))]:
+                        for target_tariff in target_pool[:4]:
+                            if target_tariff == current_tariff:
+                                continue
+                            for channel in channels[:4]:
+                                campaign = {
+                                    "campaign_name": f"{arpu_segment}_{data_segment}_{call_segment or 'ALL'}_{current_tariff}_to_{target_tariff}_{channel}",
+                                    "filter_arpu_segment": arpu_segment,
+                                    "filter_data_segment": data_segment,
+                                    "filter_call_segment": call_segment,
+                                    "filter_current_tariff": current_tariff,
+                                    "target_tariff": target_tariff,
+                                    "channel": channel,
+                                }
+                                candidates.append(campaign)
         return candidates
 
     def _profile_rows(self, profile: Any) -> List[Dict[str, Any]]:
         if profile is None:
             return []
         if isinstance(profile, list):
-            rows = []
-            for row in profile:
-                if isinstance(row, dict):
-                    rows.append(dict(row))
-            return rows
+            return [dict(row) for row in profile if isinstance(row, dict)]
         if isinstance(profile, dict):
             if not profile:
                 return []
             if all(isinstance(v, (list, tuple, set)) for v in profile.values()):
                 keys = list(profile.keys())
                 count = max(len(v) for v in profile.values()) if keys else 0
-                rows = []
-                for idx in range(count):
-                    row = {}
-                    for key in keys:
-                        values = profile[key]
-                        row[key] = values[idx] if idx < len(values) else None
-                    rows.append(row)
-                return rows
+                return [
+                    {
+                        key: profile[key][idx] if idx < len(profile[key]) else None
+                        for key in keys
+                    }
+                    for idx in range(count)
+                ]
             return [dict(profile)]
         if pd is not None and hasattr(profile, "to_dict"):
             try:
                 return [dict(row) for row in profile.to_dict(orient="records")]
             except Exception:
                 pass
-        if pd is not None and hasattr(profile, "columns"):
-            try:
-                rows = []
-                for idx in range(len(profile)):
-                    rows.append(dict(profile.iloc[idx].to_dict()))
-                return rows
-            except Exception:
-                pass
         return []
 
+    def _build_profile_index(self, rows: Sequence[Dict[str, Any]]) -> Dict[str, Dict[Tuple[str, ...], Tuple[float, int]]]:
+        indexes: Dict[str, Dict[Tuple[str, ...], List[float]]] = {"value": {}, "arpu": {}}
+        for row in rows:
+            arpu = str(row.get("arpu_segment", "")).upper()
+            data = str(row.get("data_segment", "")).upper()
+            call = str(row.get("call_segment", "")).upper()
+            current = str(row.get("current_tariff", "")).lower()
+            try:
+                value = float(row.get("predicted_arpu"))
+            except (TypeError, ValueError):
+                continue
+            indexes["value"].setdefault((arpu, data, call, current), []).append(value)
+            indexes["arpu"].setdefault((arpu, call, current), []).append(value)
+        return {
+            name: {key: (sum(values), len(values)) for key, values in buckets.items()}
+            for name, buckets in indexes.items()
+        }
+
     def _column_values(self, profile: Any, column_name: str) -> List[str]:
-        rows = self._profile_rows(profile)
+        rows = getattr(self, "_active_rows", None) or self._profile_rows(profile)
         if not rows:
             return []
         values = []
@@ -354,6 +365,9 @@ class Agent:
                 pilot["filter_data_segment"] = item["filter_data_segment"]
             if item.get("filter_current_tariff"):
                 pilot["filter_current_tariff"] = item["filter_current_tariff"]
+            if item.get("filter_call_segment"):
+                pilot["filter_call_segment"] = item["filter_call_segment"]
+            pilot["n_customers"] = 200 if len(plan) == 0 else 100 if len(plan) < 3 else 50
             plan.append(pilot)
         return plan
 
@@ -384,7 +398,13 @@ class Agent:
             estimate = self._estimate_effect(campaign, profile, pilot_history)
             channel_cost = self._channel_cost(campaign.get("channel"))
             base_value = self._base_customer_value(profile, campaign)
-            expected_profit = estimate * max(base_value, 1.0) - channel_cost * 0.5
+            channel_effect = DEFAULT_CHANNEL_EFFECT.get(
+                str(campaign.get("channel", "sms")).lower(), 0.65
+            )
+            expected_profit = (
+                estimate * max(base_value, 1.0) * channel_effect
+                - channel_cost * 0.5
+            )
             scored.append({"campaign": campaign, "score": expected_profit})
         return scored
 
@@ -405,18 +425,40 @@ class Agent:
                     continue
                 if current_filter and row.get("filter_current_tariff") and str(row.get("filter_current_tariff")) != str(current_filter):
                     continue
+                call_filter = campaign.get("filter_call_segment")
+                if call_filter and row.get("filter_call_segment") and str(row.get("filter_call_segment")) != str(call_filter):
+                    continue
                 matches.append(row)
             if matches:
                 values = []
+                sample_sizes = []
                 for row in matches:
                     value = self._safe_float(row.get("effect"), self._safe_float(row.get("score"), 0.0))
-                    if row.get("n_customers"):
-                        value *= max(1.0, math.log1p(float(row["n_customers"]) / 30.0))
+                    sample_size = max(1.0, self._safe_float(row.get("n_customers"), 30.0))
+                    sample_sizes.append(sample_size)
                     values.append(value)
-                return sum(values) / max(1, len(values))
+                pilot_value = sum(values) / max(1, len(values))
+                reliability = min(0.85, sum(sample_sizes) / (sum(sample_sizes) + 180.0))
+                return reliability * pilot_value + (1.0 - reliability) * self._prior_effect(campaign, profile)
 
         # Heuristic estimate using customer profile and tariff ordering.
-        rows = self._profile_rows(profile)
+        index = getattr(self, "_profile_index", {})
+        if index:
+            key = (
+                str(arpu_filter or "").upper(),
+                str(campaign.get("filter_call_segment") or "").upper(),
+                str(current_filter or "").lower(),
+            )
+            aggregate = index.get("arpu", {}).get(key)
+            if aggregate:
+                price_signal = aggregate[0] / aggregate[1] / 1000.0
+                if arpu_filter and str(arpu_filter).upper() == "HIGH":
+                    return max(0.14, 0.12 + price_signal * 0.08)
+                if arpu_filter and str(arpu_filter).upper() == "MID":
+                    return max(0.08, 0.09 + price_signal * 0.05)
+                return max(0.04, 0.05 + price_signal * 0.03)
+
+        rows = getattr(self, "_active_rows", None) or self._profile_rows(profile)
         price_signal = 0.0
         if rows:
             subset = rows
@@ -429,6 +471,12 @@ class Agent:
                 subset = [
                     row for row in subset
                     if str(row.get("current_tariff", "")).lower() == str(current_filter).lower()
+                ]
+            call_filter = campaign.get("filter_call_segment")
+            if call_filter:
+                subset = [
+                    row for row in subset
+                    if str(row.get("call_segment", "")).upper() == str(call_filter).upper()
                 ]
             if subset:
                 arpus = []
@@ -447,8 +495,27 @@ class Agent:
             return max(0.08, 0.09 + price_signal * 0.05)
         return max(0.04, 0.05 + price_signal * 0.03)
 
+    def _prior_effect(self, campaign: Dict[str, Any], profile: Any) -> float:
+        segment = str(campaign.get("filter_arpu_segment", "")).upper()
+        if segment == "HIGH":
+            return 0.14
+        if segment == "MID":
+            return 0.09
+        return 0.05
+
     def _base_customer_value(self, profile: Any, campaign: Dict[str, Any]) -> float:
-        rows = self._profile_rows(profile)
+        index = getattr(self, "_profile_index", {})
+        if index:
+            key = (
+                str(campaign.get("filter_arpu_segment") or "").upper(),
+                str(campaign.get("filter_data_segment") or "").upper(),
+                str(campaign.get("filter_call_segment") or "").upper(),
+                str(campaign.get("filter_current_tariff") or "").lower(),
+            )
+            aggregate = index.get("value", {}).get(key)
+            if aggregate:
+                return aggregate[0] / aggregate[1]
+        rows = getattr(self, "_active_rows", None) or self._profile_rows(profile)
         if not rows:
             return 1.0
         subset = rows
@@ -467,6 +534,11 @@ class Agent:
                 row for row in subset
                 if str(row.get("current_tariff", "")).lower() == str(campaign["filter_current_tariff"]).lower()
             ]
+        if campaign.get("filter_call_segment"):
+            subset = [
+                row for row in subset
+                if str(row.get("call_segment", "")).upper() == str(campaign["filter_call_segment"]).upper()
+            ]
         if not subset:
             return 1.0
         values = []
@@ -480,7 +552,7 @@ class Agent:
         return float(sum(values) / len(values))
 
     def _campaign_resource_estimate(self, profile: Any, campaign: Dict[str, Any]) -> Dict[str, float]:
-        rows = self._profile_rows(profile)
+        rows = getattr(self, "_active_rows", None) or self._profile_rows(profile)
         base_contacts = 200.0
         if rows:
             base_contacts = max(150.0, float(len(rows)) * 0.12)

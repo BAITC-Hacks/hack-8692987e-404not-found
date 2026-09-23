@@ -18,7 +18,7 @@ function setMetrics(result) {
 function renderCampaigns(campaigns) {
   const body = $("campaigns");
   if (!campaigns?.length) {
-    body.innerHTML = '<tr><td colspan="6" class="empty">Кампании отсутствуют</td></tr>';
+    body.innerHTML = '<tr><td colspan="7" class="empty">Кампании отсутствуют</td></tr>';
     return;
   }
   const cell = (value) => {
@@ -32,6 +32,7 @@ function renderCampaigns(campaigns) {
       campaign.campaign_name,
       campaign.filter_arpu_segment,
       campaign.filter_data_segment,
+      campaign.filter_call_segment,
       campaign.filter_current_tariff,
       campaign.target_tariff,
       campaign.channel,
@@ -71,6 +72,27 @@ async function loadStatus() {
   } catch {
     $("status").textContent = "Сервис недоступен";
   }
+
+  async function loadDataset() {
+    try {
+      const response = await fetch("/api/dataset");
+      const data = await response.json();
+      document.getElementById("channels").replaceChildren(...data.channels.map((channel) => {
+        const row = document.createElement("div");
+        row.className = "info-row";
+        row.textContent = `${channel.name} · ${channel.cost} у.е. · ×${channel.effectiveness.toFixed(2)}`;
+        return row;
+      }));
+      document.getElementById("dataset").replaceChildren(...Object.entries(data.tables).map(([name, count]) => {
+        const row = document.createElement("div");
+        row.className = "info-row";
+        row.textContent = `${name} · ${count.toLocaleString("ru-RU")} строк`;
+        return row;
+      }));
+    } catch {
+      document.getElementById("dataset").textContent = "Не удалось загрузить сведения о БД";
+    }
+  }
 }
 
 $("run-button").addEventListener("click", runAgent);
@@ -91,3 +113,4 @@ document.getElementById("profile-file").addEventListener("change", async (event)
   }
 });
 loadStatus();
+loadDataset();

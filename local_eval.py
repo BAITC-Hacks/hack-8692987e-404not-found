@@ -4,30 +4,16 @@ import csv
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from db import TARIFFS as ALL_TARIFFS, database_summary, load_profile
 
-TARIFFS = [f"tariff_{index}" for index in range(1, 11)]
+
+TARIFFS = list(ALL_TARIFFS)
 CHANNELS = ["push", "sms", "digital_ads", "call"]
 CHANNEL_COST = {"push": 0.0, "sms": 4.0, "digital_ads": 22.0, "call": 160.0}
 
 
 def _build_profile() -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    arpu_segments = [("LOW", 700), ("MID", 2500), ("HIGH", 6000)]
-    data_segments = ["LITE", "MEDIUM", "HEAVY"]
-    for index in range(1200):
-        arpu_segment, base_arpu = arpu_segments[index % len(arpu_segments)]
-        data_segment = data_segments[index % len(data_segments)]
-        current_tariff = TARIFFS[index % 5]
-        rows.append(
-            {
-                "customer_id": index + 1,
-                "current_tariff": current_tariff,
-                "arpu_segment": arpu_segment,
-                "data_segment": data_segment,
-                "predicted_arpu": base_arpu + (index % 7) * 100,
-            }
-        )
-    return rows
+    return load_profile()
 
 
 class LocalEnv:
@@ -39,12 +25,7 @@ class LocalEnv:
 
     def __init__(self, customer_profile: List[Dict[str, Any]] | None = None) -> None:
         self.customer_profile = customer_profile or _build_profile()
-        discovered_tariffs = {
-            str(row.get("current_tariff"))
-            for row in self.customer_profile
-            if row.get("current_tariff")
-        }
-        self.tariffs = sorted(discovered_tariffs) or list(TARIFFS)
+        self.tariffs = list(TARIFFS)
         self.channels = list(CHANNELS)
         self.remaining_budget = 100_000.0
         self.remaining_contacts = 15_000
@@ -69,6 +50,7 @@ class LocalEnv:
             "filter_arpu_segment": kwargs.get("filter_arpu_segment"),
             "filter_data_segment": kwargs.get("filter_data_segment"),
             "filter_current_tariff": kwargs.get("filter_current_tariff"),
+            "filter_call_segment": kwargs.get("filter_call_segment"),
             "effect": effect,
             "n_customers": int(kwargs.get("n_customers", 50)),
         }
@@ -85,6 +67,10 @@ def _tariff_number(value: str) -> int:
 
 def make_env() -> LocalEnv:
     return LocalEnv()
+
+
+def dataset_summary() -> Dict[str, int]:
+    return database_summary()
 
 
 def evaluate_campaigns(campaigns: Iterable[Dict[str, Any]], env: LocalEnv) -> Dict[str, Any]:
@@ -115,6 +101,10 @@ def evaluate_campaigns(campaigns: Iterable[Dict[str, Any]], env: LocalEnv) -> Di
         "net_score": total_gain - total_cost,
         "within_limits": total_contacts <= env.remaining_contacts and total_cost <= env.remaining_budget,
         "invalid_campaigns": len(invalid),
+        "channel_mix": {
+            channel: sum(1 for campaign in campaigns if str(campaign.get("channel", "")).lower() == channel)
+            for channel in CHANNELS
+        },
     }
 
 
@@ -127,6 +117,9 @@ def _matching_rows(rows: List[Dict[str, Any]], campaign: Dict[str, Any]) -> List
             if filter_value and str(row.get(field)).lower() != str(filter_value).lower():
                 matches = False
                 break
+        call_filter = campaign.get("filter_call_segment")
+        if matches and call_filter and str(row.get("call_segment", "")).lower() != str(call_filter).lower():
+            matches = False
         if matches:
             result.append(row)
     return result

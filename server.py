@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent import Agent
-from local_eval import LocalEnv, evaluate_campaigns, make_env
+from local_eval import CHANNELS, LocalEnv, dataset_summary, evaluate_campaigns, make_env
 
 
 ROOT = Path(__file__).parent
@@ -41,6 +41,7 @@ def _write_submission(campaigns: List[Dict[str, Any]]) -> None:
         "campaign_name",
         "filter_arpu_segment",
         "filter_data_segment",
+        "filter_call_segment",
         "filter_current_tariff",
         "target_tariff",
         "channel",
@@ -73,6 +74,28 @@ def status() -> Dict[str, Any]:
     }
 
 
+@app.get("/api/dataset")
+def dataset() -> Dict[str, Any]:
+    return {
+        "tables": dataset_summary(),
+        "tariffs": [f"tariff_{index}" for index in range(1, 22)],
+        "channels": [
+            {"name": channel, "cost": cost, "effectiveness": effect}
+            for channel, cost, effect in (
+                ("push", 0, 0.50),
+                ("sms", 4, 0.65),
+                ("digital_ads", 22, 0.85),
+                ("call", 160, 1.20),
+            )
+        ],
+        "segments": {
+            "arpu": ["LOW", "MID", "HIGH"],
+            "data": ["NON_USER", "LITE", "HEAVY"],
+            "calls": ["LOW", "MEDIUM", "HIGH"],
+        },
+    }
+
+
 @app.post("/api/run")
 def run_campaigns() -> Dict[str, Any]:
     try:
@@ -100,7 +123,13 @@ async def upload_profile(file: UploadFile) -> Dict[str, Any]:
         rows = list(csv.DictReader(io.StringIO(content.decode("utf-8-sig"))))
     except (UnicodeDecodeError, csv.Error) as exc:
         raise HTTPException(status_code=400, detail="Не удалось прочитать CSV") from exc
-    required = {"current_tariff", "arpu_segment", "data_segment", "predicted_arpu"}
+    required = {
+        "current_tariff",
+        "arpu_segment",
+        "data_segment",
+        "call_segment",
+        "predicted_arpu",
+    }
     missing = required - set(rows[0]) if rows else required
     if missing:
         raise HTTPException(status_code=400, detail=f"В CSV не хватает колонок: {', '.join(sorted(missing))}")
