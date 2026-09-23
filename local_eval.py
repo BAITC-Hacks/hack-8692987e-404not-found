@@ -89,7 +89,10 @@ def evaluate_campaigns(campaigns: Iterable[Dict[str, Any]], env: LocalEnv) -> Di
         matched = _matching_rows(rows, campaign)
         contacts = len(matched)
         cost = contacts * CHANNEL_COST[channel]
-        gain = contacts * max(0, _tariff_number(target) - 2) * 12.0
+        current = _tariff_number(str(campaign.get("filter_current_tariff", "")))
+        uplift_per_contact = max(0, _tariff_number(target) - current) * 180.0
+        gain = sum(float(row.get("predicted_arpu", 0)) for row in matched) * 0.08
+        gain = max(gain, contacts * uplift_per_contact)
         total_contacts += contacts
         total_cost += cost
         total_gain += gain

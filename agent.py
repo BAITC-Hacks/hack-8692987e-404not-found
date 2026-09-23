@@ -67,6 +67,9 @@ class Agent:
             contacts_limit = self._safe_float(getattr(env, "remaining_contacts", None), 15000.0)
             used_budget = 0.0
             used_contacts = 0.0
+            covered_customers = set()
+            selected_groups = set()
+            max_plan_size = 4 if len(getattr(self, "_active_rows", [])) <= 100 else 10
             for item in ranked:
                 campaign = item["campaign"]
                 key = (
@@ -79,16 +82,32 @@ class Agent:
                 )
                 if key in seen_signatures:
                     continue
+                group_key = (
+                    campaign.get("filter_arpu_segment"),
+                    campaign.get("filter_data_segment"),
+                    campaign.get("filter_call_segment"),
+                )
+                if group_key in selected_groups:
+                    continue
                 estimate = self._campaign_resource_estimate(profile, campaign)
+                audience = self._matching_customer_ids(profile, campaign)
+                new_audience = audience - covered_customers
+                if not audience or not new_audience:
+                    continue
+                if item["score"] <= 0:
+                    continue
                 if budget_limit > 0 and used_budget + estimate["budget_cost"] > budget_limit:
                     continue
                 if contacts_limit > 0 and used_contacts + estimate["contacts"] > contacts_limit:
                     continue
                 selected.append(campaign)
                 seen_signatures.add(key)
-                used_budget += estimate["budget_cost"]
-                used_contacts += estimate["contacts"]
-                if len(selected) >= 10:
+                selected_groups.add(group_key)
+                actual_contacts = float(len(new_audience))
+                used_contacts += actual_contacts
+                used_budget += actual_contacts * self._channel_cost(campaign.get("channel"))
+                covered_customers.update(new_audience)
+                if len(selected) >= max_plan_size:
                     break
 
             if not selected:
@@ -401,12 +420,27 @@ class Agent:
             channel_effect = DEFAULT_CHANNEL_EFFECT.get(
                 str(campaign.get("channel", "sms")).lower(), 0.65
             )
-            expected_profit = (
-                estimate * max(base_value, 1.0) * channel_effect
-                - channel_cost * 0.5
-            )
+            audience_size = len(self._matching_customer_ids(profile, campaign))
+            expected_gain = estimate * max(base_value, 1.0) * channel_effect
+            expected_profit = audience_size * (expected_gain - channel_cost)
+            if audience_size == 0:
+                expected_profit = -1.0
             scored.append({"campaign": campaign, "score": expected_profit})
         return scored
+
+    def _matching_customer_ids(self, profile: Any, campaign: Dict[str, Any]) -> set:
+        rows = getattr(self, "_active_rows", None) or self._profile_rows(profile)
+        matching = set()
+        for index, row in enumerate(rows):
+            checks = (
+                ("arpu_segment", campaign.get("filter_arpu_segment"), str(row.get("arpu_segment", ""))),
+                ("data_segment", campaign.get("filter_data_segment"), str(row.get("data_segment", ""))),
+                ("call_segment", campaign.get("filter_call_segment"), str(row.get("call_segment", ""))),
+                ("current_tariff", campaign.get("filter_current_tariff"), str(row.get("current_tariff", ""))),
+            )
+            if all(not expected or actual.lower() == str(expected).lower() for _, expected, actual in checks):
+                matching.add(row.get("customer_id", index))
+        return matching
 
     def _estimate_effect(self, campaign: Dict[str, Any], profile: Any, pilot_history: Sequence[Dict[str, Any]]) -> float:
         # Pilot history is the strongest signal if present. It should dominate the prior.
