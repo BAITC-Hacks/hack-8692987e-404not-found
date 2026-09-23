@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Beeline Campaign Agent</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">404 NOT FOUND · HACKATHON</p>
+        <h1>Campaign intelligence</h1>
+        <p class="subtitle">Запускайте агента, проверяйте ограничения и просматривайте лучшие тарифные кампании.</p>
+      </div>
+      <button id="run-button" class="primary">Запустить агента</button>
+    </header>
+
+    <section id="status" class="notice">Проверяем состояние сервиса...</section>
+    <section class="upload panel">
+      <div>
+        <p class="eyebrow">DATA SOURCE</p>
+        <h2>Профиль клиентов</h2>
+        <p id="data-source">Демо-профиль будет использован по умолчанию.</p>
+      </div>
+      <label class="file-button">
+        Выбрать CSV
+        <input id="profile-file" type="file" accept=".csv">
+      </label>
+    </section>
+    <section class="metrics">
+      <article><span>Кампаний</span><strong id="campaign-count">—</strong></article>
+      <article><span>Net score</span><strong id="score">—</strong></article>
+      <article><span>Контактов</span><strong id="contacts">—</strong></article>
+      <article><span>Бюджет</span><strong id="budget">—</strong></article>
+      <article><span>Пилотов</span><strong id="pilots">—</strong></article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div><p class="eyebrow">OUTPUT</p><h2>Сгенерированные кампании</h2></div>
+        <span id="limits" class="badge">—</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Кампания</th><th>ARPU</th><th>Data</th><th>Текущий тариф</th><th>Целевой тариф</th><th>Канал</th></tr></thead>
+          <tbody id="campaigns"><tr><td colspan="6" class="empty">Нажмите «Запустить агента»</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
